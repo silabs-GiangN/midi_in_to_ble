@@ -1,5 +1,5 @@
 /*
-   BLE blinky example
+   BLE MIDI example
 
    The example allows a remote BLE device to control the onboard LED and get state updates from the onboard button.
 
@@ -7,7 +7,7 @@
    it will accept any incoming connection. The device offers a GATT service and characteristic
    for controlling the onboard LED and reporting the state of an onboard button. The demo will work
    on boards without a built-in button however the button state reporting feature will be disabled.
-   With the Simplicity Connect app you can test this functionality by going to the "Demo" tab and selecting "Blinky".
+   With the Simplicity Connect app you can test this functionality by going to the "Demo" tab and selecting "MIDI".
 
    Find out more on the API usage at: https://docs.silabs.com/bluetooth/latest/bluetooth-stack-api/
 
@@ -27,7 +27,7 @@
    - Ezurio Lyra 24P 20dBm Dev Kit
    - Seeed Studio XIAO MG24 (Sense)
 
-   Author: Tamas Jozsi (Silicon Labs)
+   Author: Giang Nguyen Thu (Silicon Labs)
  */
 
 #include <MIDI.h>
@@ -37,10 +37,11 @@ bool btn_notification_enabled = false;
 volatile bool btn_state_changed = false;
 volatile uint8_t btn_state = LOW;
 static void btn_state_change_callback();
-static void send_button_state_notification();
-static void set_led_on(bool state);
+static void midi_note_on();
 static uint8_t conn_handle = 0xFF;
 
+byte note_to_send;
+byte velocity;
 
 PACKSTRUCT(typedef struct
 {
@@ -56,13 +57,35 @@ typedef union {
   uint8_t payload[5];
 }midi_data_t;
 
+void handleNoteOn(byte channel, byte pitch, byte velocity)
+{
+    // digitalWrite(PB0, HIGH);
+    // Do whatever you want when a note is pressed.
+
+    // Try to keep your callbacks short (no delays ect)
+    // otherwise it would slow down the loop() and have a bad impact
+    // on real-time performance.
+    Serial.printf("Note on: channel: %d, pitch: %d, velocity: %d\r\n", channel, pitch, velocity);
+}
+
+void handleNoteOff(byte channel, byte pitch, byte velocity)
+{
+    // digitalWrite(PB0, LOW);
+    // Do something when the note is released.
+    // Note that NoteOn messages with 0 velocity are interpreted as NoteOffs.
+    Serial.printf("Note off: channel: %d, pitch: %d, velocity: %d\r\n", channel, pitch, velocity);
+}
+
+// -----------------------------------------------------------------------------
+MIDI_CREATE_INSTANCE(HardwareSerial, MIDI_SERIAL, midiA);
+
+
 void setup()
 {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LED_BUILTIN_INACTIVE);
-  set_led_on(false);
   Serial.begin(115200);
-  Serial.println("Silicon Labs BLE blinky example");
+  Serial.println("Silicon Labs MIDI BLE example");
 
   // If the board has a built-in button configure it for usage
   #ifdef BTN_BUILTIN
@@ -72,13 +95,29 @@ void setup()
   // Avoid warning for unused function on boards without a button
   (void)btn_state_change_callback;
   #endif // BTN_BUILTIN
+
+  Serial.println("MIDI RECV start");
+  // Connect the handleNoteOn function to the library,
+  // so it is called upon reception of a NoteOn.
+  midiA.setHandleNoteOn(handleNoteOn);  // Put only the name of the function
+
+  // Do the same for NoteOffs
+  midiA.setHandleNoteOff(handleNoteOff);
+
+  // Initiate MIDI communications, listen to all channels
+  midiA.begin(MIDI_CHANNEL_OMNI);
 }
 
 void loop()
 {
+  // Call MIDI.read the fastest you can for real-time performance.
+  midiA.read();
+  // Should add condition here to filter incoming messages
+  note_to_send = midiA.getData1();
+  velocity = midiA.getData2();
+
   if (btn_state_changed) {
     btn_state_changed = false;
-    Serial.println("Button pressed");
     send_button_state_notification();
   }
 }
@@ -86,12 +125,11 @@ void loop()
 static void ble_initialize_gatt_db();
 static void ble_start_advertising();
 
-static const uint8_t advertised_name[] = "Blinky Example";
+static const uint8_t advertised_name[] = "MIDI BLE Example";
 static uint16_t gattdb_session_id;
 static uint16_t generic_access_service_handle;
 static uint16_t name_characteristic_handle;
 static uint16_t blinky_service_handle;
-static uint16_t led_control_characteristic_handle;
 
 static uint16_t btn_report_characteristic_handle;
 
@@ -141,24 +179,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     // This event indicates that the value of an attribute in the local GATT
     // database was changed by a remote GATT client
     case sl_bt_evt_gatt_server_attribute_value_id:
-      // Check if the changed characteristic is the LED control
-      if (led_control_characteristic_handle == evt->data.evt_gatt_server_attribute_value.attribute) {
-        Serial.println("LED control characteristic data received");
-        // Check the length of the received data
-        if (evt->data.evt_gatt_server_attribute_value.value.len == 0) {
-          break;
-        }
-        // Get the received byte
-        uint8_t received_data = evt->data.evt_gatt_server_attribute_value.value.data[0];
-        // Turn the LED on/off according to the received data
-        if (received_data == 0x00) {
-          set_led_on(false);
-          Serial.println("LED off");
-        } else if (received_data == 0x01) {
-          set_led_on(true);
-          Serial.println("LED on");
-        }
-      }
       break;
 
     // -------------------------------
@@ -204,14 +224,19 @@ static void btn_state_change_callback()
  * Sends a BLE notification the the client if notifications are enabled and
  * the board has a built-in button.
  *****************************************************************************/
+
 static void send_button_state_notification()
 {
-  // if (!btn_notification_enabled) {
-  //   return;
-  // }
-  // sl_status_t sc = sl_bt_gatt_server_notify_all(btn_report_characteristic_handle,
-  //                                               sizeof(btn_state),
-  //                                               (const uint8_t*)&btn_state);
+    Serial.print("Notification sent, button state: ");
+    if(btn_state == 1) 
+      midi_note_on(note_to_send, velocity);
+    else 
+      midi_note_off(note_to_send, velocity);
+    Serial.println(btn_state);
+}
+
+static void midi_note_on(byte note, byte velocity)
+{
   sl_status_t sc;
   static midi_data_t note_on;
 
@@ -229,30 +254,40 @@ static void send_button_state_notification()
   // Status byte = 0b1sssnnnn where sss is message type and nnnn is channel
   note_on.midi_event.status = 0x90;
   // Setting the note parameter
-  note_on.midi_event.note = 69;
+  note_on.midi_event.note = note;
   // Setting the velocity parameter
-  note_on.midi_event.velocity = 100;
+  note_on.midi_event.velocity = velocity;
 
     // Sending the assembled midi message
   sc = sl_bt_gatt_server_send_notification(conn_handle, btn_report_characteristic_handle, 5, (uint8_t const *) &note_on);
-
-  if (sc == SL_STATUS_OK) {
-    Serial.print("Notification sent, button state: ");
-    Serial.println(btn_state);
-  }
 }
 
-/**************************************************************************//**
- * Sets the built-in LED to the desired state accounting for the inverted LED
- * logic on select boards.
- *****************************************************************************/
-static void set_led_on(bool state)
+static void midi_note_off(byte note, byte velocity)
 {
-  if (state) {
-    digitalWrite(LED_BUILTIN, LED_BUILTIN_ACTIVE);
-  } else {
-    digitalWrite(LED_BUILTIN, LED_BUILTIN_INACTIVE);
-  }
+  sl_status_t sc;
+  static midi_data_t note_off;
+
+  uint32_t tick;
+  uint32_t temp;
+
+  tick = sl_sleeptimer_get_tick_count();
+  temp = sl_sleeptimer_tick_to_ms(tick);
+  // Mask it - only the lower 13 bit needed
+  temp = temp & 0x00001fff;
+  temp = temp & 0x00001fff;
+  // Header byte = 0b10xxxxxx where xxxxxxx is top 6 bits of timestamp
+  note_off.midi_event.header = 0x80 | (temp >> 7);
+  // Timestamp byte = 0b1xxxxxxx where xxxxxxx is lower 7 bits of timestamp
+  note_off.midi_event.timestamp = 0x80 | (temp & 0x003f);
+  // Status byte = 0b1sssnnnn where sss is message type and nnnn is channel
+  note_off.midi_event.status = 0x80;
+  // Setting the note parameter
+  note_off.midi_event.note = note;
+  // Setting the velocity parameter
+  note_off.midi_event.velocity = velocity;
+
+    // Sending the assembled midi message
+  sc = sl_bt_gatt_server_send_notification(conn_handle, btn_report_characteristic_handle, 5, (uint8_t const *) &note_off);
 }
 
 /**************************************************************************//**
@@ -332,41 +367,22 @@ static void ble_initialize_gatt_db()
   sc = sl_bt_gattdb_start_service(gattdb_session_id, generic_access_service_handle);
   app_assert_status(sc);
 
-  // Add the Blinky service to the GATT DB
-  // UUID: de8a5aac-a99b-c315-0c80-60d4cbb51224
-  const uuid_128 blinky_service_uuid = {
+  // Add the MIDI service to the GATT DB
+  // UUID: 03B80E5A-EDE8-4B33-A751-6CE34EC4C700
+  const uuid_128 midi_service_uuid = {
     .data = { 0x00, 0xC7, 0xC4, 0x4E, 0xE3, 0x6C, 0x51, 0xA7, 0x33, 0x4B, 0xE8, 0xED, 0x5A, 0x0E, 0xB8, 0x03 }
   };
   sc = sl_bt_gattdb_add_service(gattdb_session_id,
                                 sl_bt_gattdb_primary_service,
                                 SL_BT_GATTDB_ADVERTISED_SERVICE,
-                                sizeof(blinky_service_uuid),
-                                blinky_service_uuid.data,
+                                sizeof(midi_service_uuid),
+                                midi_service_uuid.data,
                                 &blinky_service_handle);
   app_assert_status(sc);
 
-  // Add the 'LED Control' characteristic to the Blinky service
-  // UUID: 5b026510-4088-c297-46d8-be6c736a087a
-  const uuid_128 led_control_characteristic_uuid = {
-    .data = { 0x7a, 0x08, 0x6a, 0x73, 0x6c, 0xbe, 0xd8, 0x46, 0x97, 0xc2, 0x88, 0x40, 0x10, 0x65, 0x02, 0x5b }
-  };
-
-  uint8_t led_char_init_value = 0;
-  sc = sl_bt_gattdb_add_uuid128_characteristic(gattdb_session_id,
-                                               blinky_service_handle,
-                                               SL_BT_GATTDB_CHARACTERISTIC_READ | SL_BT_GATTDB_CHARACTERISTIC_WRITE,
-                                               0x00,
-                                               0x00,
-                                               led_control_characteristic_uuid,
-                                               sl_bt_gattdb_fixed_length_value,
-                                               1,                               // max length
-                                               sizeof(led_char_init_value),     // initial value length
-                                               &led_char_init_value,            // initial value
-                                               &led_control_characteristic_handle);
-
-  // Add the 'Button report' characteristic to the Blinky service
-  // UUID: 61a885a4-41c3-60d0-9a53-6d652a70d29c
-  const uuid_128 btn_report_characteristic_uuid = {
+  // Add the ' MIDI Data UUID' characteristic to the MIDI service
+  // UUID: 7772E5DB-3868-4112-A1A9-F2669D106BF3
+  const uuid_128 midi_report_characteristic_uuid = {
     .data = { 0xF3, 0x6B, 0x10, 0x9D, 0x66, 0xF2, 0xA9, 0xA1, 0x12, 0x41, 0x68, 0x38, 0xDB, 0xE5, 0x72, 0x77 }
   };
 
@@ -377,14 +393,14 @@ static void ble_initialize_gatt_db()
                                                | SL_BT_GATTDB_CHARACTERISTIC_WRITE,
                                                0x00,
                                                0x00,
-                                               btn_report_characteristic_uuid,
+                                               midi_report_characteristic_uuid,
                                                sl_bt_gattdb_fixed_length_value,
                                                1,                               // max length
                                                sizeof(btn_char_init_value),     // initial value length
                                                &btn_char_init_value,            // initial value
                                                &btn_report_characteristic_handle);
 
-  // Start the Blinky service
+  // Start the MIDI service
   sc = sl_bt_gattdb_start_service(gattdb_session_id, blinky_service_handle);
   app_assert_status(sc);
 
