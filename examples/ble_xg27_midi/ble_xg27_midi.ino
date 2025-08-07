@@ -42,7 +42,6 @@ static uint8_t conn_handle = 0xFF;
 
 byte note_to_send;
 byte note_velocity;
-byte note_pressure;
 volatile bool note_state_changed = false; // Current state of note
 volatile bool last_note_state = false;    // Last state of note
 
@@ -79,7 +78,6 @@ void handleNoteOff(byte channel, byte pitch, byte velocity)
     // Note that NoteOn messages with 0 velocity are interpreted as NoteOffs.
     note_to_send = pitch;
     note_velocity = velocity;
-    note_state_changed = false;
     Serial.printf("Note off: channel: %d, pitch: %d, velocity: %d\r\n", channel, pitch, velocity);
 }
 
