@@ -41,7 +41,10 @@ static void midi_note_on();
 static uint8_t conn_handle = 0xFF;
 
 byte note_to_send;
-byte velocity;
+byte note_velocity;
+byte note_pressure;
+volatile bool note_state_changed = false; // Current state of note
+volatile bool last_note_state = false;    // Last state of note
 
 PACKSTRUCT(typedef struct
 {
@@ -50,6 +53,7 @@ PACKSTRUCT(typedef struct
   uint8_t  status;
   uint8_t  note;
   uint8_t  velocity;
+  // uint8_t  pressure;
 }) midi_event_packet_t;
 
 typedef union {
@@ -59,20 +63,23 @@ typedef union {
 
 void handleNoteOn(byte channel, byte pitch, byte velocity)
 {
-    // digitalWrite(PB0, HIGH);
     // Do whatever you want when a note is pressed.
-
     // Try to keep your callbacks short (no delays ect)
     // otherwise it would slow down the loop() and have a bad impact
     // on real-time performance.
+    note_to_send = pitch;
+    note_velocity = velocity;
+    note_state_changed = true;
     Serial.printf("Note on: channel: %d, pitch: %d, velocity: %d\r\n", channel, pitch, velocity);
 }
 
 void handleNoteOff(byte channel, byte pitch, byte velocity)
 {
-    // digitalWrite(PB0, LOW);
     // Do something when the note is released.
     // Note that NoteOn messages with 0 velocity are interpreted as NoteOffs.
+    note_to_send = pitch;
+    note_velocity = velocity;
+    note_state_changed = false;
     Serial.printf("Note off: channel: %d, pitch: %d, velocity: %d\r\n", channel, pitch, velocity);
 }
 
@@ -112,13 +119,24 @@ void loop()
 {
   // Call MIDI.read the fastest you can for real-time performance.
   midiA.read();
-  // Should add condition here to filter incoming messages
-  note_to_send = midiA.getData1();
-  velocity = midiA.getData2();
 
-  if (btn_state_changed) {
-    btn_state_changed = false;
-    send_button_state_notification();
+  // if (btn_state_changed) {
+  //   btn_state_changed = false;
+  //   send_button_state_notification();
+  // }
+  if(note_state_changed != last_note_state) // Check if the current state has changed
+  {
+    last_note_state = note_state_changed;
+
+    if(note_state_changed) 
+    {
+      note_state_changed = false;
+      midi_note_on(note_to_send, note_velocity);
+    }
+    else
+    {
+      midi_note_off(note_to_send, note_velocity);
+    }
   }
 }
 
@@ -229,9 +247,9 @@ static void send_button_state_notification()
 {
     Serial.print("Notification sent, button state: ");
     if(btn_state == 1) 
-      midi_note_on(note_to_send, velocity);
+      midi_note_on(note_to_send, note_velocity);
     else 
-      midi_note_off(note_to_send, velocity);
+      midi_note_off(note_to_send, note_velocity);
     Serial.println(btn_state);
 }
 
