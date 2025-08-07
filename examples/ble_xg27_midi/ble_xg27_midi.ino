@@ -34,16 +34,18 @@
 #define MIDI_SERIAL  Serial1
 
 bool btn_notification_enabled = false;
-volatile bool btn_state_changed = false;
 volatile uint8_t btn_state = LOW;
 static void btn_state_change_callback();
-static void midi_note_on();
+static void midi_note_on(byte note, byte velocity);
+static void midi_note_off(byte note, byte velocity);
 static uint8_t conn_handle = 0xFF;
 
 byte note_to_send;
 byte note_velocity;
-volatile bool note_state_changed = false; // Current state of note
-volatile bool last_note_state = false;    // Last state of note
+
+// Event flags for MIDI notes
+volatile bool note_on_event = false;
+volatile bool note_off_event = false;
 
 PACKSTRUCT(typedef struct
 {
@@ -63,27 +65,23 @@ typedef union {
 void handleNoteOn(byte channel, byte pitch, byte velocity)
 {
     // Do whatever you want when a note is pressed.
-    // Try to keep your callbacks short (no delays ect)
-    // otherwise it would slow down the loop() and have a bad impact
-    // on real-time performance.
     note_to_send = pitch;
     note_velocity = velocity;
-    note_state_changed = true;
+    note_on_event = true;
     Serial.printf("Note on: channel: %d, pitch: %d, velocity: %d\r\n", channel, pitch, velocity);
 }
 
 void handleNoteOff(byte channel, byte pitch, byte velocity)
 {
     // Do something when the note is released.
-    // Note that NoteOn messages with 0 velocity are interpreted as NoteOffs.
     note_to_send = pitch;
     note_velocity = velocity;
+    note_off_event = true;
     Serial.printf("Note off: channel: %d, pitch: %d, velocity: %d\r\n", channel, pitch, velocity);
 }
 
 // -----------------------------------------------------------------------------
 MIDI_CREATE_INSTANCE(HardwareSerial, MIDI_SERIAL, midiA);
-
 
 void setup()
 {
@@ -103,7 +101,6 @@ void setup()
 
   Serial.println("MIDI RECV start");
   // Connect the handleNoteOn function to the library,
-  // so it is called upon reception of a NoteOn.
   midiA.setHandleNoteOn(handleNoteOn);  // Put only the name of the function
 
   // Do the same for NoteOffs
@@ -118,23 +115,15 @@ void loop()
   // Call MIDI.read the fastest you can for real-time performance.
   midiA.read();
 
-  // if (btn_state_changed) {
-  //   btn_state_changed = false;
-  //   send_button_state_notification();
-  // }
-  if(note_state_changed != last_note_state) // Check if the current state has changed
-  {
-    last_note_state = note_state_changed;
-
-    if(note_state_changed) 
-    {
-      note_state_changed = false;
-      midi_note_on(note_to_send, note_velocity);
-    }
-    else
-    {
-      midi_note_off(note_to_send, note_velocity);
-    }
+  // Handle MIDI note-on event
+  if (note_on_event) {
+    note_on_event = false;
+    midi_note_on(note_to_send, note_velocity);
+  }
+  // Handle MIDI note-off event
+  if (note_off_event) {
+    note_off_event = false;
+    midi_note_off(note_to_send, note_velocity);
   }
 }
 
@@ -145,9 +134,8 @@ static const uint8_t advertised_name[] = "MIDI BLE Example";
 static uint16_t gattdb_session_id;
 static uint16_t generic_access_service_handle;
 static uint16_t name_characteristic_handle;
-static uint16_t blinky_service_handle;
-
-static uint16_t btn_report_characteristic_handle;
+static uint16_t midi_service_handle;
+static uint16_t midi_report_characteristic_handle;
 
 /**************************************************************************//**
  * Bluetooth stack event handler
@@ -158,9 +146,6 @@ static uint16_t btn_report_characteristic_handle;
 void sl_bt_on_event(sl_bt_msg_t *evt)
 {
   switch (SL_BT_MSG_ID(evt->header)) {
-    // -------------------------------
-    // This event indicates the device has started and the radio is ready.
-    // Do not call any stack command before receiving this boot event!
     case sl_bt_evt_system_boot_id:
     {
       Serial.begin(115200);
@@ -175,15 +160,11 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     }
     break;
 
-    // -------------------------------
-    // This event indicates that a new connection was opened
     case sl_bt_evt_connection_opened_id:
       Serial.println("BLE connection opened");
       conn_handle = evt->data.evt_connection_opened.connection;
       break;
 
-    // -------------------------------
-    // This event indicates that a connection was closed
     case sl_bt_evt_connection_closed_id:
       Serial.println("BLE connection closed");
       // Restart the advertisement
@@ -191,31 +172,9 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       Serial.println("BLE advertisement restarted");
       break;
 
-    // -------------------------------
-    // This event indicates that the value of an attribute in the local GATT
-    // database was changed by a remote GATT client
     case sl_bt_evt_gatt_server_attribute_value_id:
       break;
 
-    // -------------------------------
-    // This event is received when a GATT characteristic status changes
-    case sl_bt_evt_gatt_server_characteristic_status_id:
-      // If the 'Button report' characteristic has been changed
-      if (evt->data.evt_gatt_server_characteristic_status.characteristic == btn_report_characteristic_handle) {
-        // The client just enabled the notification - send notification of the current button state
-        if (evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification) {
-          Serial.println("Button state change notification enabled");
-          btn_notification_enabled = true;
-          btn_state_change_callback();
-        } else {
-          Serial.println("Button state change notification disabled");
-          btn_notification_enabled = false;
-        }
-      }
-      break;
-
-    // -------------------------------
-    // Default event handler
     default:
       break;
   }
@@ -228,17 +187,15 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
  *****************************************************************************/
 static void btn_state_change_callback()
 {
-  // If the board has a built-in button
   #ifdef BTN_BUILTIN
-  // The real button state is inverted - most boards have an active low button configuration
   btn_state = !digitalRead(BTN_BUILTIN);
-  btn_state_changed = true;
   #endif // BTN_BUILTIN
 }
 
 /**************************************************************************//**
- * Sends a BLE notification the the client if notifications are enabled and
+ * Sends a BLE notification to the client if notifications are enabled and
  * the board has a built-in button.
+ * (Currently sends a MIDI note message for demonstration.)
  *****************************************************************************/
 
 static void send_button_state_notification()
@@ -274,8 +231,8 @@ static void midi_note_on(byte note, byte velocity)
   // Setting the velocity parameter
   note_on.midi_event.velocity = velocity;
 
-    // Sending the assembled midi message
-  sc = sl_bt_gatt_server_send_notification(conn_handle, btn_report_characteristic_handle, 5, (uint8_t const *) &note_on);
+  // Sending the assembled midi message
+  sc = sl_bt_gatt_server_send_notification(conn_handle, midi_report_characteristic_handle, 5, (uint8_t const *) &note_on);
 }
 
 static void midi_note_off(byte note, byte velocity)
@@ -290,7 +247,6 @@ static void midi_note_off(byte note, byte velocity)
   temp = sl_sleeptimer_tick_to_ms(tick);
   // Mask it - only the lower 13 bit needed
   temp = temp & 0x00001fff;
-  temp = temp & 0x00001fff;
   // Header byte = 0b10xxxxxx where xxxxxxx is top 6 bits of timestamp
   note_off.midi_event.header = 0x80 | (temp >> 7);
   // Timestamp byte = 0b1xxxxxxx where xxxxxxx is lower 7 bits of timestamp
@@ -302,8 +258,8 @@ static void midi_note_off(byte note, byte velocity)
   // Setting the velocity parameter
   note_off.midi_event.velocity = velocity;
 
-    // Sending the assembled midi message
-  sc = sl_bt_gatt_server_send_notification(conn_handle, btn_report_characteristic_handle, 5, (uint8_t const *) &note_off);
+  // Sending the assembled midi message
+  sc = sl_bt_gatt_server_send_notification(conn_handle, midi_report_characteristic_handle, 5, (uint8_t const *) &note_off);
 }
 
 /**************************************************************************//**
@@ -393,7 +349,7 @@ static void ble_initialize_gatt_db()
                                 SL_BT_GATTDB_ADVERTISED_SERVICE,
                                 sizeof(midi_service_uuid),
                                 midi_service_uuid.data,
-                                &blinky_service_handle);
+                                &midi_service_handle);
   app_assert_status(sc);
 
   // Add the ' MIDI Data UUID' characteristic to the MIDI service
@@ -402,9 +358,9 @@ static void ble_initialize_gatt_db()
     .data = { 0xF3, 0x6B, 0x10, 0x9D, 0x66, 0xF2, 0xA9, 0xA1, 0x12, 0x41, 0x68, 0x38, 0xDB, 0xE5, 0x72, 0x77 }
   };
 
-  uint8_t btn_char_init_value = 0;
+  uint8_t midi_char_init_value = 0;
   sc = sl_bt_gattdb_add_uuid128_characteristic(gattdb_session_id,
-                                               blinky_service_handle,
+                                               midi_service_handle,
                                                SL_BT_GATTDB_CHARACTERISTIC_READ | SL_BT_GATTDB_CHARACTERISTIC_NOTIFY
                                                | SL_BT_GATTDB_CHARACTERISTIC_WRITE,
                                                0x00,
@@ -412,12 +368,12 @@ static void ble_initialize_gatt_db()
                                                midi_report_characteristic_uuid,
                                                sl_bt_gattdb_fixed_length_value,
                                                1,                               // max length
-                                               sizeof(btn_char_init_value),     // initial value length
-                                               &btn_char_init_value,            // initial value
-                                               &btn_report_characteristic_handle);
+                                               sizeof(midi_char_init_value),     // initial value length
+                                               &midi_char_init_value,            // initial value
+                                               &midi_report_characteristic_handle);
 
   // Start the MIDI service
-  sc = sl_bt_gattdb_start_service(gattdb_session_id, blinky_service_handle);
+  sc = sl_bt_gattdb_start_service(gattdb_session_id, midi_service_handle);
   app_assert_status(sc);
 
   // Commit the GATT DB changes
