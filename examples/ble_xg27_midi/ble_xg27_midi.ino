@@ -32,7 +32,9 @@
 
 #include <MIDI.h>
 #define MIDI_SERIAL  Serial1
+#define SIGNAL_RESET 0x01
 
+unsigned long buttonPressTime = 0;
 bool btn_notification_enabled = false;
 volatile uint8_t btn_state = LOW;
 static void btn_state_change_callback();
@@ -112,6 +114,29 @@ void setup()
 
 void loop()
 {
+  unsigned long currentMillis = millis();
+  boolean buttonPushed (digitalRead(BTN_BUILTIN) == LOW);
+
+  // If the user presses the USER BUTTON for more than 3 seconds, the BLE connection
+  // shall reset, and the advertisement shall restart
+    if(buttonPushed) {
+    if(buttonPressTime == 0) {
+      buttonPressTime = currentMillis;
+      // Serial.printf("buttonPressTime : %lu\r\n", buttonPressTime);
+    }
+    else if (millis() - buttonPressTime >= 3000) {
+      buttonPressTime = 0;
+      if( digitalRead(LED_BUILTIN) == LOW ) {
+        digitalWrite(LED_BUILTIN, HIGH);
+        sl_bt_external_signal(SIGNAL_RESET);
+      } else {
+        digitalWrite(LED_BUILTIN, LOW);
+      }
+    }
+  } else {
+    buttonPressTime = 0;
+  }
+
   // Call MIDI.read the fastest you can for real-time performance.
   midiA.read();
 
@@ -166,10 +191,18 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       break;
 
     case sl_bt_evt_connection_closed_id:
-      Serial.println("BLE connection closed");
+      Serial.println("BLE connection closed!");
       // Restart the advertisement
       ble_start_advertising();
       Serial.println("BLE advertisement restarted");
+      break;
+    
+    case sl_bt_evt_system_external_signal_id:
+      if(evt->data.evt_system_external_signal.extsignals & SIGNAL_RESET)
+      {
+        Serial.println("Close BLE connection...");
+        sl_bt_connection_close(conn_handle); 
+      }
       break;
 
     case sl_bt_evt_gatt_server_attribute_value_id:
